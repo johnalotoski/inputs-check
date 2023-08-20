@@ -1,10 +1,12 @@
 # flakeModule: inputs.inputs-check.flakeModule
 flake @ {lib, ...}: let
-  p = v: lib.traceSeq v v;
+  inherit (lib) filter filterAttrs flatten foldl' getExe makeBinPath mapAttrsToList meta optionals optionalString recursiveUpdate traceSeq;
+
+  p = v: traceSeq v v;
 
   # Attrset defaults don't work from impure cli passing to functions
   parseArgs = args:
-    p (lib.foldl' lib.recursiveUpdate {} [
+    p (foldl' recursiveUpdate {} [
       # Search defns
       (parseArg args "startPathStr" "inputs")
       (parseArg args "recursePathStr" "inputs")
@@ -37,21 +39,21 @@ flake @ {lib, ...}: let
     then builtins.trace attrPath eval
     else eval;
 
-  filterAttrs = args: lib.filterAttrs (n: _: !(builtins.elem n args.denyList));
-  filterList = args: builtins.filter (n: !(builtins.elem n args.denyList));
+  fAttrs = args: filterAttrs (n: _: !(builtins.elem n args.denyList));
+  fList = args: builtins.filter (n: !(builtins.elem n args.denyList));
 
   found = pathAttr: [{FOUND = {inherit (pathAttr) attrPath out depth;};}];
   attrCheck = pathAttr: args: builtins.hasAttr args.recursePathStr pathAttr.attr && pathAttr.depth < args.maxRecurseDepth;
 
   genPathAttr = args:
-    lib.mapAttrsToList (name: _: {
+    mapAttrsToList (name: _: {
       inherit name;
       out = builtins.unsafeDiscardStringContext flake.${args.startPathStr}.${name}.outPath;
       attr = flake.${args.startPathStr}.${name};
       attrPath = "${args.startPathStr}.${name}";
       depth = 1;
     })
-    (filterAttrs args flake.${args.startPathStr});
+    (fAttrs args flake.${args.startPathStr});
 
   recursePathSearch = pathAttr: args: let
     recurseInto = pathAttr:
@@ -64,11 +66,11 @@ flake @ {lib, ...}: let
           depth = pathAttr.depth + 1;
         }
         args)
-      (filterList args (builtins.attrNames pathAttr.attr.${args.recursePathStr}));
+      (fList args (builtins.attrNames pathAttr.attr.${args.recursePathStr}));
   in
     optionalTrace args pathAttr.attrPath (
       if args.dumpAllPaths
-      then found pathAttr ++ lib.optionals (attrCheck pathAttr args) (recurseInto pathAttr)
+      then found pathAttr ++ optionals (attrCheck pathAttr args) (recurseInto pathAttr)
       else if builtins.match args.matchExtRegex pathAttr.name != null
       then found pathAttr
       else if attrCheck pathAttr args
@@ -79,12 +81,12 @@ flake @ {lib, ...}: let
   searchAttrPath = args:
     builtins.concatLists (
       map builtins.attrValues (
-        lib.filter (e: builtins.typeOf e == "set" && e ? FOUND) (
-          lib.flatten (
+        filter (e: builtins.typeOf e == "set" && e ? FOUND) (
+          flatten (
             map (
               pathAttr:
                 if args.dumpAllPaths
-                then found pathAttr ++ lib.optionals (attrCheck pathAttr args) (recursePathSearch pathAttr args)
+                then found pathAttr ++ optionals (attrCheck pathAttr args) (recursePathSearch pathAttr args)
                 else if builtins.match args.matchExtRegex pathAttr.name != null
                 then found pathAttr
                 else if attrCheck pathAttr args
@@ -100,11 +102,25 @@ in {
   flake.inputsCheck = args: builtins.toJSON (searchAttrPath (parseArgs args));
 
   perSystem = {pkgs, ...}: {
-    packages.inputs-check = with pkgs;
-      writeShellApplication {
-        name = "inputs-check";
-        runtimeInputs = [findutils jq nix];
+    packages.inputs-check = let
+      name = "inputs-check";
+    in
+      # Essentially the writeShellApplication substituted into writeText to pass more meta attrs.
+      pkgs.writeTextFile {
+        inherit name;
+        meta.description = "Show sorted flake input closure sizes";
+        executable = true;
+        destination = "/bin/${name}";
+        allowSubstitutes = true;
+        preferLocalBuild = false;
         text = ''
+          #!${pkgs.runtimeShell}
+          set -o errexit
+          set -o nounset
+          set -o pipefail
+
+          export PATH="${with pkgs; makeBinPath [findutils jq nix]}:$PATH"
+
           [ -n "''${1:-}" ] && ARGS="$1" || ARGS="{}"
           # shellcheck disable=SC2016
           nix eval \
@@ -114,8 +130,25 @@ in {
             | jq -r '.[] | (.attrPath) + " " + (.depth | tostring) + " " + (.out)' \
             | xargs -I{} bash -c 'echo "{} $(nix path-info -S $(echo {} | awk "{print \$3}") | awk "{print \$2}")"' \
             | jq -R '[splits(" +")] | {attrPath: .[0], depth: (.[1] | tonumber), out: .[2], closureSize: (.[3] | tonumber)}' \
-            | jq -s 'sort_by(.closureSize) | reverse'
+            | jq -s 'sort_by(.closureSize)'
         '';
+
+        checkPhase =
+          # GHC (=> shellcheck) isn't supported on some platforms (such as risc-v)
+          # but we still want to use writeShellApplication on those platforms
+          let
+            shellcheckSupported = meta.availableOn pkgs.stdenv.buildPlatform pkgs.shellcheck.compiler;
+            shellcheckCommand = optionalString shellcheckSupported ''
+              # use shellcheck which does not include docs
+              # pandoc takes long to build and documentation isn't needed for just running the cli
+              ${getExe (pkgs.haskell.lib.compose.justStaticExecutables pkgs.shellcheck.unwrapped)} "$target"
+            '';
+          in ''
+            runHook preCheck
+            ${pkgs.stdenv.shellDryRun} "$target"
+            ${shellcheckCommand}
+            runHook postCheck
+          '';
       };
   };
 }
