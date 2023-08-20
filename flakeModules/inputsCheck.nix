@@ -1,6 +1,6 @@
 # flakeModule: inputs.inputs-check.flakeModule
 flake @ {lib, ...}: let
-  inherit (lib) filter filterAttrs flatten foldl' getExe makeBinPath mapAttrsToList meta optionals optionalString recursiveUpdate traceSeq;
+  inherit (lib) filter filterAttrs flatten foldl' mapAttrsToList optionals recursiveUpdate traceSeq;
 
   p = v: traceSeq v v;
 
