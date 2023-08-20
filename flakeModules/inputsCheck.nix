@@ -102,25 +102,11 @@ in {
   flake.inputsCheck = args: builtins.toJSON (searchAttrPath (parseArgs args));
 
   perSystem = {pkgs, ...}: {
-    packages.inputs-check = let
-      name = "inputs-check";
-    in
-      # Essentially the writeShellApplication substituted into writeText to pass more meta attrs.
-      pkgs.writeTextFile {
-        inherit name;
-        meta.description = "Show sorted flake input closure sizes";
-        executable = true;
-        destination = "/bin/${name}";
-        allowSubstitutes = true;
-        preferLocalBuild = false;
+    packages.inputs-check =
+      (pkgs.writeShellApplication {
+        name = "inputs-check";
+        runtimeInputs = with pkgs; [findutils jq nix];
         text = ''
-          #!${pkgs.runtimeShell}
-          set -o errexit
-          set -o nounset
-          set -o pipefail
-
-          export PATH="${with pkgs; makeBinPath [findutils jq nix]}:$PATH"
-
           [ -n "''${1:-}" ] && ARGS="$1" || ARGS="{}"
           # shellcheck disable=SC2016
           nix eval \
@@ -132,23 +118,7 @@ in {
             | jq -R '[splits(" +")] | {attrPath: .[0], depth: (.[1] | tonumber), out: .[2], closureSize: (.[3] | tonumber)}' \
             | jq -s 'sort_by(.closureSize)'
         '';
-
-        checkPhase =
-          # GHC (=> shellcheck) isn't supported on some platforms (such as risc-v)
-          # but we still want to use writeShellApplication on those platforms
-          let
-            shellcheckSupported = meta.availableOn pkgs.stdenv.buildPlatform pkgs.shellcheck.compiler;
-            shellcheckCommand = optionalString shellcheckSupported ''
-              # use shellcheck which does not include docs
-              # pandoc takes long to build and documentation isn't needed for just running the cli
-              ${getExe (pkgs.haskell.lib.compose.justStaticExecutables pkgs.shellcheck.unwrapped)} "$target"
-            '';
-          in ''
-            runHook preCheck
-            ${pkgs.stdenv.shellDryRun} "$target"
-            ${shellcheckCommand}
-            runHook postCheck
-          '';
-      };
+      })
+      .overrideAttrs {meta.description = "Show sorted flake input closure sizes";};
   };
 }
