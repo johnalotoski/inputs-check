@@ -119,6 +119,6 @@ in {
             | jq -s 'sort_by(.closureSize)'
         '';
       })
-      .overrideAttrs (old: {meta = old.meta // {description = "Show sorted flake input closure sizes";};});
+      .overrideAttrs (_: {meta.description = "Show sorted flake input closure sizes";});
   };
 }
